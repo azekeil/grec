@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/azekeil/grec/internal/bot"
+	"github.com/azekeil/grec/internal/commands"
 	"github.com/azekeil/grec/internal/config"
 	"github.com/azekeil/grec/internal/handler"
 	"github.com/azekeil/grec/internal/self"
@@ -18,8 +19,12 @@ func main() {
 	v := config.ReadConfig()
 	config := config.ParseConfig(v)
 
-	// Setup help
-	help := self.MakeHelp("commands", "commands", "Command")
+	// Setup help using the new embedded file approach
+	files, err := commands.ParseAll()
+	if err != nil {
+		log.Fatalf("Failed to parse commands: %v", err)
+	}
+	help := self.BuildDocFromFiles(files)
 
 	session, err := discordgo.New("Bot " + config.Token)
 	if err != nil {

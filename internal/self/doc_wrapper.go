@@ -3,32 +3,72 @@ package self
 import (
 	"go/ast"
 	"go/doc"
-	"go/parser"
-	"go/token"
+	"sort"
+	"strings"
 
-	"github.com/azekeil/grec/external/goparser"
-	"github.com/azekeil/grec/internal"
+	"github.com/azekeil/grec/internal/goparser"
 )
 
-// parseEmbeds parses source files from an embed
-func parseEmbeds(path string) (map[string]*ast.Package, error) {
-	fset := token.NewFileSet() // positions are relative to fset
+// DocFuncs represents documentation functions for commands.
+type DocFuncs map[string]*doc.Func
 
-	d, err := goparser.ParseEmbedFSDir(fset, path, internal.CommandsEmbedFS, nil, parser.ParseComments)
-	if err != nil {
-		return nil, err
-	}
-
-	return d, nil
+func (f DocFuncs) Summary(name string) string {
+	return strings.Split(f[name].Doc, "\n")[0]
 }
 
-func getDocPackage(d map[string]*ast.Package, name string) *doc.Package {
-	for k, f := range d {
-		if k == name {
-			return doc.New(f, "./", 0)
+func (f DocFuncs) CommandHelp(name string) string {
+	return f[name].Doc
+}
+
+func (f DocFuncs) AllSummaries() []string {
+	var s []string
+	for k := range f {
+		s = append(s, f.Summary(k))
+	}
+	sort.Strings(s)
+	return s
+}
+
+// Capitalise does a case-insensitive comparison on the function names
+// and returns the correctly-capitalised name if present
+func (f DocFuncs) Capitalise(name string) string {
+	lname := strings.ToLower(name)
+	for _, k := range f {
+		if lname == strings.ToLower(k.Name) {
+			return k.Name
 		}
 	}
-	return nil
+	return ""
+}
+
+// getDocPackage creates a doc.Package from parsed files for use with go/doc.
+//
+// NOTE: We must construct an ast.Package here because go/doc.New() requires it,
+// even though the type is deprecated in Go 1.24+. This is a temporary workaround
+// required by library compatibility until go/doc supports file-centric input directly.
+// See: https://github.com/golang/go/issues/67895
+func getDocPackage(files []goparser.ParsedFile, name string) *doc.Package {
+	var filesToParse []*ast.File
+	for _, f := range files {
+		if f.File != nil && f.File.Name.Name == name {
+			filesToParse = append(filesToParse, f.File)
+		}
+	}
+
+	if len(filesToParse) == 0 {
+		return nil
+	}
+
+	// TODO: Replace with file-centric approach when go/doc supports it directly
+	pkg := &ast.Package{
+		Name:  name,
+		Files: make(map[string]*ast.File),
+	}
+	for _, f := range filesToParse {
+		pkg.Files[f.Name.Name] = f
+	}
+
+	return doc.New(pkg, "./", 0)
 }
 
 func getDocMethods(p *doc.Package, typeName string) DocFuncs {
@@ -43,10 +83,23 @@ func getDocMethods(p *doc.Package, typeName string) DocFuncs {
 	return DocFuncs(s)
 }
 
-func MakeHelp(path, pkg, typ string) map[string]*doc.Func {
-	d, err := parseEmbeds(path)
-	if err != nil {
-		panic(err)
+// BuildDocFromFiles creates DocFuncs from pre-parsed files, avoiding circular imports.
+func BuildDocFromFiles(files []goparser.ParsedFile) DocFuncs {
+	pkg := getDocPackage(files, "commands")
+	if pkg == nil {
+		return make(DocFuncs)
 	}
-	return getDocMethods(getDocPackage(d, pkg), typ)
+
+	docFuncs := getDocMethods(pkg, "")
+
+	// Also add methods from Command type
+	for _, t := range pkg.Types {
+		if t.Name == "Command" {
+			for _, m := range t.Methods {
+				docFuncs[m.Name] = m
+			}
+		}
+	}
+
+	return docFuncs
 }
